@@ -2,6 +2,8 @@ use std::fs;
 
 use day02::*;
 
+const ORIGINAL_OUTPUT: i32 = 19_690_720;
+
 fn main() -> Result<(), std::io::Error> {
     let file = fs::read_to_string("input.txt")?;
 
@@ -23,7 +25,7 @@ fn main() -> Result<(), std::io::Error> {
 
             test_computer.run();
 
-            if test_computer.output() == 19690720 {
+            if test_computer.output() == ORIGINAL_OUTPUT {
                 println!("Original inputs: {}", noun * 100 + verb);
                 break 'outer;
             }
