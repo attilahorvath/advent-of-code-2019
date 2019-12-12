@@ -13,8 +13,12 @@ impl Asteroid {
         Self { x, y }
     }
 
+    fn vector_to(&self, other: &Asteroid) -> (f64, f64) {
+        ((other.x - self.x) as f64, (other.y - self.y) as f64)
+    }
+
     fn angle_between(&self, other: &Asteroid) -> f64 {
-        let d = ((other.x - self.x) as f64, (other.y - self.y) as f64);
+        let d = self.vector_to(other);
 
         let angle = d.1.atan2(d.0) + PI * 1.5;
 
@@ -22,9 +26,9 @@ impl Asteroid {
     }
 
     fn distance_to(&self, other: &Asteroid) -> f64 {
-        let d = ((other.x - self.x) as f64, (other.y - self.y) as f64);
+        let d = self.vector_to(other);
 
-        (d.0 * d.0 + d.1 * d.1).sqrt()
+        (d.0.powf(2.0) + d.1.powf(2.0)).sqrt()
     }
 }
 
