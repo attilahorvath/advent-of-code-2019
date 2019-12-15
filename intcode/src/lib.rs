@@ -2,10 +2,9 @@ use std::error::Error;
 use std::fmt;
 use std::str::FromStr;
 use std::sync::mpsc;
-use std::thread;
 
 const MEMORY_SIZE: usize = 4096;
-type ValueType = i64;
+pub type ValueType = i64;
 
 #[derive(Clone, Copy)]
 enum ParameterMode {
@@ -76,6 +75,11 @@ impl Memory {
 
         self.ip = 0;
         self.relative_base = 0;
+    }
+
+    fn load_values(&mut self, index: usize, values: &[ValueType]) {
+        self.values
+            .splice(index..index + values.len(), values.to_vec());
     }
 
     fn advance(&mut self, length: usize) -> &[ValueType] {
@@ -350,9 +354,24 @@ impl Computer {
         (sender, receiver)
     }
 
+    pub fn dma(&mut self, position: usize) -> &mut ValueType {
+        &mut self.memory.values[position]
+    }
+
     pub fn run(&mut self) {
         self.memory.load(&self.program);
 
+        self.execute();
+    }
+
+    pub fn run_with_values(&mut self, index: usize, values: &[ValueType]) {
+        self.memory.load(&self.program);
+        self.memory.load_values(index, values);
+
+        self.execute();
+    }
+
+    fn execute(&mut self) {
         loop {
             let opcode = self.memory.advance(1)[0];
             let operation = Opcode::parse(opcode);
@@ -362,98 +381,6 @@ impl Computer {
             }
         }
     }
-}
-
-fn all_permutations(array: &mut [ValueType]) -> Vec<Vec<ValueType>> {
-    fn generate_permutation(
-        array: &mut [ValueType],
-        permutations: &mut Vec<Vec<ValueType>>,
-        index: usize,
-    ) {
-        if index == array.len() - 1 {
-            permutations.push(array.to_vec());
-        }
-
-        for i in index..array.len() {
-            array.swap(i, index);
-            generate_permutation(array, permutations, index + 1);
-            array.swap(i, index);
-        }
-    }
-
-    let mut permutations = vec![];
-
-    generate_permutation(array, &mut permutations, 0);
-
-    permutations
-}
-
-fn chain_computers(
-    program: &str,
-    count: usize,
-    feedback: bool,
-) -> (
-    Vec<(Computer, mpsc::Sender<ValueType>)>,
-    mpsc::Receiver<ValueType>,
-) {
-    let indices = (0..count).collect::<Vec<_>>();
-
-    let mut computers = indices
-        .iter()
-        .map(|_| {
-            let mut computer = Computer::new(program).unwrap();
-            let (sender, input) = mpsc::channel();
-            computer.attach_input(input);
-            (computer, sender)
-        })
-        .collect::<Vec<_>>();
-
-    for window in indices.windows(2) {
-        let sender = computers[window[1]].1.clone();
-        computers[window[0]].0.attach_output(sender);
-    }
-
-    let (output, receiver) = if feedback {
-        let (final_sender, final_receiver) = mpsc::channel();
-        computers[count - 1].0.attach_final_output(final_sender);
-
-        (computers[0].1.clone(), final_receiver)
-    } else {
-        mpsc::channel()
-    };
-
-    computers[count - 1].0.attach_output(output);
-
-    (computers, receiver)
-}
-
-pub fn highest_signal(program: &str, phases: &mut [ValueType], feedback: bool) -> ValueType {
-    all_permutations(phases)
-        .iter()
-        .map(|permutation| {
-            let (computers, receiver) = chain_computers(program, permutation.len(), feedback);
-
-            for (c, &i) in computers.iter().zip(permutation.iter()) {
-                c.1.send(i).unwrap();
-            }
-
-            computers[0].1.send(0).unwrap();
-
-            let threads = computers
-                .into_iter()
-                .map(|(mut c, _)| {
-                    thread::spawn(move || {
-                        c.run();
-                    })
-                })
-                .collect::<Vec<_>>();
-
-            threads.into_iter().for_each(|t| t.join().unwrap());
-
-            receiver.iter().last().unwrap()
-        })
-        .max()
-        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -683,58 +610,6 @@ mod tests {
         computer.run();
 
         assert_eq!(1001, receiver.recv().unwrap());
-    }
-
-    #[test]
-    fn highest_signal_1() {
-        let program = "3,15,3,16,1002,16,10,16,1,16,15,15,4,15,99,0,0";
-
-        assert_eq!(
-            43_210,
-            highest_signal(&program, &mut [0, 1, 2, 3, 4], false)
-        );
-    }
-
-    #[test]
-    fn highest_signal_2() {
-        let program = "3,23,3,24,1002,24,10,24,1002,23,-1,23,\
-                       101,5,23,23,1,24,23,23,4,23,99,0,0";
-
-        assert_eq!(
-            54_321,
-            highest_signal(&program, &mut [0, 1, 2, 3, 4], false)
-        );
-    }
-
-    #[test]
-    fn highest_signal_3() {
-        let program = "3,31,3,32,1002,32,10,32,1001,31,-2,31,1007,31,0,33,\
-                       1002,33,7,33,1,33,31,31,1,32,31,31,4,31,99,0,0,0";
-
-        assert_eq!(
-            65_210,
-            highest_signal(&program, &mut [0, 1, 2, 3, 4], false)
-        );
-    }
-
-    #[test]
-    fn highest_signal_with_feedback_1() {
-        let program = "3,26,1001,26,-4,26,3,27,1002,27,2,27,1,27,26,\
-                       27,4,27,1001,28,-1,28,1005,28,6,99,0,0,5";
-
-        assert_eq!(
-            139_629_729,
-            highest_signal(&program, &mut [5, 6, 7, 8, 9], true)
-        );
-    }
-
-    #[test]
-    fn highest_signal_with_feedback_2() {
-        let program = "3,52,1001,52,-5,52,3,53,1,52,56,54,1007,54,5,55,1005,55,26,1001,54,\
-                       -5,54,1105,1,12,1,53,54,53,1008,54,0,55,1001,55,1,55,2,53,55,53,4,\
-                       53,1001,56,-1,56,1005,56,6,99,0,0,0,0,10";
-
-        assert_eq!(18_216, highest_signal(&program, &mut [5, 6, 7, 8, 9], true));
     }
 
     #[test]
