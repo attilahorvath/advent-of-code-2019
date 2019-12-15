@@ -1,7 +1,7 @@
 use std::error::Error;
 use std::fs;
 
-use day09::*;
+use intcode::Computer;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let program = fs::read_to_string("input.txt")?;

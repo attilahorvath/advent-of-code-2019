@@ -1,31 +1,23 @@
+use std::error::Error;
 use std::fs;
 
-use day02::*;
+use intcode::{Computer, ValueType};
 
-const ORIGINAL_OUTPUT: i32 = 19_690_720;
+const ORIGINAL_OUTPUT: ValueType = 19_690_720;
 
-fn main() -> Result<(), std::io::Error> {
-    let file = fs::read_to_string("input.txt")?;
+fn main() -> Result<(), Box<dyn Error>> {
+    let program = fs::read_to_string("input.txt")?;
+    let mut computer = Computer::new(program.trim())?;
 
-    let memory = file
-        .trim()
-        .split(",")
-        .map(|elem| elem.parse::<i32>().expect("invalid integer"))
-        .collect::<Vec<_>>();
+    computer.run_with_values(1, &[12, 2]);
 
-    let mut computer = Computer::new(&memory).with_inputs(12, 2);
-
-    computer.run();
-
-    println!("Output: {}", computer.output());
+    println!("Output: {}", computer.dma(0));
 
     'outer: for noun in 0..=99 {
         for verb in 0..=99 {
-            let mut test_computer = Computer::new(&memory).with_inputs(noun, verb);
+            computer.run_with_values(1, &[noun, verb]);
 
-            test_computer.run();
-
-            if test_computer.output() == ORIGINAL_OUTPUT {
+            if *computer.dma(0) == ORIGINAL_OUTPUT {
                 println!("Original inputs: {}", noun * 100 + verb);
                 break 'outer;
             }
