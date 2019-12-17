@@ -143,37 +143,46 @@ impl FromStr for Program {
     }
 }
 
-struct Io {
-    input: Option<mpsc::Receiver<ValueType>>,
-    output: Option<mpsc::Sender<ValueType>>,
-    final_output: Option<mpsc::Sender<ValueType>>,
+pub trait Io: Send {
+    fn send(&mut self, _value: ValueType) {}
+
+    fn receive(&mut self) -> ValueType {
+        0
+    }
 }
 
-impl Io {
-    fn new() -> Self {
-        Io {
-            input: None,
-            output: None,
-            final_output: None,
-        }
+struct NullIo;
+
+impl Io for NullIo {}
+
+struct AsyncIo {
+    input: mpsc::Receiver<ValueType>,
+    output: mpsc::Sender<ValueType>,
+}
+
+impl AsyncIo {
+    fn new() -> (Self, mpsc::Sender<ValueType>, mpsc::Receiver<ValueType>) {
+        let (sender, input) = mpsc::channel();
+        let (output, receiver) = mpsc::channel();
+
+        (
+            Self {
+                input: input,
+                output: output,
+            },
+            sender,
+            receiver,
+        )
+    }
+}
+
+impl Io for AsyncIo {
+    fn send(&mut self, value: ValueType) {
+        self.output.send(value).unwrap_or(());
     }
 
-    fn send(&self, value: ValueType) {
-        if let Some(sender) = &self.output {
-            sender.send(value).unwrap_or(());
-        }
-
-        if let Some(sender) = &self.final_output {
-            sender.send(value).unwrap();
-        }
-    }
-
-    fn receive(&self) -> ValueType {
-        if let Some(receiver) = &self.input {
-            receiver.recv().unwrap()
-        } else {
-            0
-        }
+    fn receive(&mut self) -> ValueType {
+        self.input.recv().unwrap()
     }
 }
 
@@ -193,13 +202,13 @@ enum Opcode {
 
 struct Operation {
     parameter_modes: Vec<ParameterMode>,
-    operation: fn(&[Parameter], &mut Memory, &mut Io),
+    operation: fn(&[Parameter], &mut Memory, &mut dyn Io),
     halt: bool,
 }
 
 impl Operation {
     fn new(
-        operation: fn(&[Parameter], &mut Memory, &mut Io),
+        operation: fn(&[Parameter], &mut Memory, &mut dyn Io),
         parameter_modes: &[ParameterMode],
     ) -> Self {
         Self {
@@ -215,7 +224,7 @@ impl Operation {
         self
     }
 
-    fn execute(&self, memory: &mut Memory, io: &mut Io) -> bool {
+    fn execute(&self, memory: &mut Memory, io: &mut dyn Io) -> bool {
         let parameters = memory
             .advance(self.parameter_modes.len())
             .iter()
@@ -229,41 +238,41 @@ impl Operation {
     }
 }
 
-fn add(parameters: &[Parameter], memory: &mut Memory, _io: &mut Io) {
+fn add(parameters: &[Parameter], memory: &mut Memory, _io: &mut dyn Io) {
     memory.set(
         parameters[2],
         memory.get(parameters[0]) + memory.get(parameters[1]),
     );
 }
 
-fn multiply(parameters: &[Parameter], memory: &mut Memory, _io: &mut Io) {
+fn multiply(parameters: &[Parameter], memory: &mut Memory, _io: &mut dyn Io) {
     memory.set(
         parameters[2],
         memory.get(parameters[0]) * memory.get(parameters[1]),
     );
 }
 
-fn input(parameters: &[Parameter], memory: &mut Memory, io: &mut Io) {
+fn input(parameters: &[Parameter], memory: &mut Memory, io: &mut dyn Io) {
     memory.set(parameters[0], io.receive());
 }
 
-fn output(parameters: &[Parameter], memory: &mut Memory, io: &mut Io) {
+fn output(parameters: &[Parameter], memory: &mut Memory, io: &mut dyn Io) {
     io.send(memory.get(parameters[0]));
 }
 
-fn jump_if_true(parameters: &[Parameter], memory: &mut Memory, _io: &mut Io) {
+fn jump_if_true(parameters: &[Parameter], memory: &mut Memory, _io: &mut dyn Io) {
     if memory.get(parameters[0]) != 0 {
         memory.jump(memory.get(parameters[1]));
     }
 }
 
-fn jump_if_false(parameters: &[Parameter], memory: &mut Memory, _io: &mut Io) {
+fn jump_if_false(parameters: &[Parameter], memory: &mut Memory, _io: &mut dyn Io) {
     if memory.get(parameters[0]) == 0 {
         memory.jump(memory.get(parameters[1]));
     }
 }
 
-fn less_than(parameters: &[Parameter], memory: &mut Memory, _io: &mut Io) {
+fn less_than(parameters: &[Parameter], memory: &mut Memory, _io: &mut dyn Io) {
     memory.set(
         parameters[2],
         if memory.get(parameters[0]) < memory.get(parameters[1]) {
@@ -274,7 +283,7 @@ fn less_than(parameters: &[Parameter], memory: &mut Memory, _io: &mut Io) {
     );
 }
 
-fn equals(parameters: &[Parameter], memory: &mut Memory, _io: &mut Io) {
+fn equals(parameters: &[Parameter], memory: &mut Memory, _io: &mut dyn Io) {
     memory.set(
         parameters[2],
         if memory.get(parameters[0]) == memory.get(parameters[1]) {
@@ -285,11 +294,11 @@ fn equals(parameters: &[Parameter], memory: &mut Memory, _io: &mut Io) {
     );
 }
 
-fn adjust_relative_base(parameters: &[Parameter], memory: &mut Memory, _io: &mut Io) {
+fn adjust_relative_base(parameters: &[Parameter], memory: &mut Memory, _io: &mut dyn Io) {
     memory.advance_relative_base(memory.get(parameters[0]));
 }
 
-fn nop(_parameters: &[Parameter], _memory: &mut Memory, _io: &mut Io) {}
+fn nop(_parameters: &[Parameter], _memory: &mut Memory, _io: &mut dyn Io) {}
 
 impl Opcode {
     fn parse(opcode: ValueType) -> Operation {
@@ -320,7 +329,7 @@ impl Opcode {
 pub struct Computer {
     program: Program,
     memory: Memory,
-    io: Io,
+    io: Box<dyn Io>,
 }
 
 impl Computer {
@@ -328,28 +337,18 @@ impl Computer {
         Ok(Self {
             program: program.parse()?,
             memory: Memory::new(MEMORY_SIZE),
-            io: Io::new(),
+            io: Box::new(NullIo),
         })
     }
 
-    pub fn attach_input(&mut self, input: mpsc::Receiver<ValueType>) {
-        self.io.input = Some(input);
-    }
-
-    pub fn attach_output(&mut self, output: mpsc::Sender<ValueType>) {
-        self.io.output = Some(output);
-    }
-
-    pub fn attach_final_output(&mut self, output: mpsc::Sender<ValueType>) {
-        self.io.final_output = Some(output);
+    pub fn attach_io(&mut self, io: Box<dyn Io>) {
+        self.io = io;
     }
 
     pub fn get_io(&mut self) -> (mpsc::Sender<ValueType>, mpsc::Receiver<ValueType>) {
-        let (sender, input) = mpsc::channel();
-        let (output, receiver) = mpsc::channel();
+        let (io, sender, receiver) = AsyncIo::new();
 
-        self.io.input = Some(input);
-        self.io.output = Some(output);
+        self.io = Box::new(io);
 
         (sender, receiver)
     }
@@ -376,7 +375,7 @@ impl Computer {
             let opcode = self.memory.advance(1)[0];
             let operation = Opcode::parse(opcode);
 
-            if !operation.execute(&mut self.memory, &mut self.io) {
+            if !operation.execute(&mut self.memory, &mut *self.io) {
                 break;
             }
         }

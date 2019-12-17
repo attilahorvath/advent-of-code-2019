@@ -1,7 +1,42 @@
 use std::sync::mpsc;
 use std::thread;
 
-use intcode::{Computer, ValueType};
+use intcode::{Computer, Io, ValueType};
+
+struct ChainedIo {
+    input: mpsc::Receiver<ValueType>,
+    outputs: Vec<mpsc::Sender<ValueType>>,
+}
+
+impl ChainedIo {
+    fn new() -> (Self, mpsc::Sender<ValueType>) {
+        let (sender, input) = mpsc::channel();
+
+        (
+            Self {
+                input: input,
+                outputs: vec![],
+            },
+            sender,
+        )
+    }
+
+    fn attach_output(&mut self, output: mpsc::Sender<ValueType>) {
+        self.outputs.push(output);
+    }
+}
+
+impl Io for ChainedIo {
+    fn send(&mut self, value: ValueType) {
+        for sender in &self.outputs {
+            sender.send(value).unwrap_or(());
+        }
+    }
+
+    fn receive(&mut self) -> ValueType {
+        self.input.recv().unwrap()
+    }
+}
 
 fn permutations(array: &mut [ValueType]) -> Vec<Vec<ValueType>> {
     fn generate_permutation(
@@ -37,31 +72,33 @@ fn chain_computers(
 ) {
     let indices = (0..count).collect::<Vec<_>>();
 
-    let mut computers = indices
-        .iter()
-        .map(|_| {
-            let mut computer = Computer::new(program).unwrap();
-            let (sender, input) = mpsc::channel();
-            computer.attach_input(input);
-            (computer, sender)
-        })
-        .collect::<Vec<_>>();
+    let mut chained_ios = indices.iter().map(|_| ChainedIo::new()).collect::<Vec<_>>();
 
     for window in indices.windows(2) {
-        let sender = computers[window[1]].1.clone();
-        computers[window[0]].0.attach_output(sender);
+        let sender = chained_ios[window[1]].1.clone();
+        chained_ios[window[0]].0.attach_output(sender);
     }
 
     let (output, receiver) = if feedback {
         let (final_sender, final_receiver) = mpsc::channel();
-        computers[count - 1].0.attach_final_output(final_sender);
+        chained_ios[count - 1].0.attach_output(final_sender);
 
-        (computers[0].1.clone(), final_receiver)
+        (chained_ios[0].1.clone(), final_receiver)
     } else {
         mpsc::channel()
     };
 
-    computers[count - 1].0.attach_output(output);
+    chained_ios[count - 1].0.attach_output(output);
+
+    let computers = chained_ios
+        .into_iter()
+        .map(|(chained_io, sender)| {
+            let mut computer = Computer::new(program).unwrap();
+            computer.attach_io(Box::new(chained_io));
+
+            (computer, sender)
+        })
+        .collect::<Vec<_>>();
 
     (computers, receiver)
 }
