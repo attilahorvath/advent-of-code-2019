@@ -2,6 +2,7 @@ use std::error::Error;
 use std::fmt;
 use std::str::FromStr;
 use std::sync::mpsc;
+use std::sync::mpsc::TryRecvError;
 
 const MEMORY_SIZE: usize = 4096;
 pub type ValueType = i64;
@@ -330,14 +331,20 @@ pub struct Computer {
     program: Program,
     memory: Memory,
     io: Box<dyn Io>,
+    shutdown_button: mpsc::Sender<()>,
+    shutdown_receiver: mpsc::Receiver<()>,
 }
 
 impl Computer {
     pub fn new(program: &str) -> Result<Self, ProgramParseError> {
+        let (shutdown_button, shutdown_receiver) = mpsc::channel();
+
         Ok(Self {
             program: program.parse()?,
             memory: Memory::new(MEMORY_SIZE),
             io: Box::new(NullIo),
+            shutdown_button,
+            shutdown_receiver,
         })
     }
 
@@ -357,6 +364,10 @@ impl Computer {
         &mut self.memory.values[position]
     }
 
+    pub fn shutdown_button(&self) -> mpsc::Sender<()> {
+        self.shutdown_button.clone()
+    }
+
     pub fn run(&mut self) {
         self.memory.load(&self.program);
 
@@ -372,6 +383,11 @@ impl Computer {
 
     fn execute(&mut self) {
         loop {
+            match self.shutdown_receiver.try_recv() {
+                Ok(_) | Err(TryRecvError::Disconnected) => break,
+                Err(TryRecvError::Empty) => (),
+            }
+
             let opcode = self.memory.advance(1)[0];
             let operation = Opcode::parse(opcode);
 
