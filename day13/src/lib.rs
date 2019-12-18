@@ -1,5 +1,6 @@
 use std::cmp::Ordering;
 use std::collections::HashMap;
+use std::sync::mpsc;
 use std::thread;
 
 use intcode::{Computer, Io, ProgramParseError, ValueType};
@@ -96,7 +97,7 @@ struct Arcade {
     tile_builder: TileBuilder,
     ball_position: (ValueType, ValueType),
     paddle_position: (ValueType, ValueType),
-    score: ValueType,
+    sender: mpsc::Sender<ValueType>,
 }
 
 impl Io for Arcade {
@@ -105,10 +106,7 @@ impl Io for Arcade {
             match tile.2 {
                 Tile::Ball => self.ball_position = (tile.0, tile.1),
                 Tile::Paddle => self.paddle_position = (tile.0, tile.1),
-                Tile::Score => {
-                    self.score = tile.0;
-                    println!("Score: {}", self.score);
-                }
+                Tile::Score => self.sender.send(tile.0).unwrap(),
                 _ => (),
             }
         }
@@ -124,25 +122,34 @@ impl Io for Arcade {
 }
 
 impl Arcade {
-    fn new() -> Self {
-        Self {
-            tile_builder: TileBuilder::new(),
-            ball_position: (0, 0),
-            paddle_position: (0, 0),
-            score: 0,
-        }
+    fn new() -> (Self, mpsc::Receiver<ValueType>) {
+        let (sender, receiver) = mpsc::channel();
+
+        (
+            Self {
+                tile_builder: TileBuilder::new(),
+                ball_position: (0, 0),
+                paddle_position: (0, 0),
+                sender,
+            },
+            receiver,
+        )
     }
 }
 
-pub fn run_game(program: &str) -> Result<(), ProgramParseError> {
+pub fn run_game(program: &str) -> Result<ValueType, ProgramParseError> {
     let mut computer = Computer::new(program)?;
-    let arcade = Arcade::new();
+    let (arcade, receiver) = Arcade::new();
 
     computer.attach_io(Box::new(arcade));
 
-    computer.run_with_values(0, &[2]);
+    let thread = thread::spawn(move || {
+        computer.run_with_values(0, &[2]);
+    });
 
-    Ok(())
+    thread.join().unwrap();
+
+    Ok(receiver.iter().last().unwrap_or(0))
 }
 
 #[cfg(test)]
